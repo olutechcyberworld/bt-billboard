@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 #include "types.h"
+#include "config.h"   // SCHED_MSG_LEN — this header must be self-contained,
+                       // not rely on whichever .cpp happens to include
+                       // config.h before scheduler.h
 
 struct ScheduleEntry {
   uint8_t enabled;

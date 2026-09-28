@@ -16,12 +16,17 @@
 #define PIN_BUZZER          3    // GPIO3: not a strapping pin on C3, safe post-boot
 
 // ── Networking ──────────────────────────────────────────────────────────────
-#define DEVICE_HOSTNAME     "bt-billboard"
-#define PROVISIONING_AP_NAME "BT-Billboard-Setup"
+// DEVICE_HOSTNAME_PREFIX / PROVISIONING_AP_PREFIX: the actual mDNS hostname
+// and captive-portal AP name are these prefixes plus a 6-hex-char suffix
+// derived from this unit's factory MAC address (see transport.cpp), so that
+// multiple billboards on the same network never collide on either name.
+#define DEVICE_HOSTNAME_PREFIX     "bt-billboard"
+#define PROVISIONING_AP_PREFIX     "BT-Billboard-Setup"
 #define WS_PORT             81
 
 // ── Display / protocol limits ───────────────────────────────────────────────
 #define MAX_MSG_LEN         256
+#define NO_MESSAGE_PLACEHOLDER "No message set"
 #define SCROLL_PASSES       3
 #define SCROLL_SPACING      3
 

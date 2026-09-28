@@ -72,8 +72,7 @@ void protocol_dispatch(uint8_t clientNum, const String& frame) {
         Serial.println(F("[TIME] Malformed S: payload rejected"));
         break;
       }
-      clock_set(y, mo, d, h, mi, s);
-      transport_reply(clientNum, "T:OK\n");
+      transport_reply(clientNum, clock_set(y, mo, d, h, mi, s) ? "T:OK\n" : "T:ERR\n");
       break;
     }
 
@@ -198,6 +197,15 @@ void protocol_dispatch(uint8_t clientNum, const String& frame) {
         transport_reply(clientNum, line);
       }
       transport_reply(clientNum, "L:END\n");
+      break;
+    }
+
+    // ── Device info ─────────────────────────────────────────────────────────
+    case 'I': {
+      char line[96];
+      snprintf(line, sizeof(line), "I:%s,%s,%s\n",
+               transport_mac(), transport_hostname(), FW_VERSION);
+      transport_reply(clientNum, line);
       break;
     }
 

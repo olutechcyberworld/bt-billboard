@@ -1,3 +1,4 @@
+#include <Wire.h>
 #include "clock.h"
 #include "config.h"
 
@@ -13,6 +14,13 @@ static const char* const MONTH_NAMES[12] = {
 };
 
 bool clock_begin() {
+  // PIN_SDA/PIN_SCL (config.h) were previously defined but never actually
+  // used anywhere in the firmware — nothing ever called Wire.begin(), so
+  // I2C was left to initialise on the ESP32-C3's default pins rather than
+  // the ones this board is actually wired to. rtc.begin() would then
+  // (correctly) fail to find a DS3231 that was never on the bus it was
+  // probing, regardless of whether the chip is present and wired correctly.
+  Wire.begin(PIN_SDA, PIN_SCL);
   gPresent = rtc.begin();
   if (!gPresent) {
     Serial.println(F("[RTC]  ERROR: DS3231 not detected."));
@@ -44,6 +52,7 @@ bool clock_set(uint16_t y, uint8_t mo, uint8_t d,
 }
 
 String clock_time_str() {
+  if (!clock_is_valid()) return String("--:--");
   DateTime now = rtc.now();
   char buf[6];
   snprintf(buf, sizeof(buf), "%02d:%02d", now.hour(), now.minute());
@@ -51,6 +60,16 @@ String clock_time_str() {
 }
 
 String clock_named_datetime() {
+  // clock_is_valid() must gate this before anything else: an absent or
+  // never-synced RTC can hand back a DateTime built from garbage register
+  // reads, and unlike the numeric formatters above, this function uses
+  // RTC-derived values (month(), dayOfTheWeek()) as array indices into
+  // WEEKDAY_NAMES[]/MONTH_NAMES[]. An out-of-range value there is not a
+  // cosmetic bug like a wrong-looking number would be -- it is an
+  // out-of-bounds pointer read that crashes the device (see clock_begin()
+  // and the Wire.begin() fix: this is what was corrupting Mode 2 on any
+  // board where the RTC hadn't been detected).
+  if (!clock_is_valid()) return String("RTC not set");
   DateTime now = rtc.now();
   char buf[40];
   snprintf(buf, sizeof(buf), "%s, %s %d  %02d:%02d",
@@ -61,6 +80,7 @@ String clock_named_datetime() {
 }
 
 void clock_numeric_date(DateFormat f, char* out, size_t outSize) {
+  if (!clock_is_valid()) { snprintf(out, outSize, "--/--"); return; }
   DateTime now = rtc.now();
   switch (f) {
     case FMT_DD_SLASH_MM:

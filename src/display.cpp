@@ -76,6 +76,7 @@ static bool         gDeferClear = false;
 static char gMsgBuf   [MAX_MSG_LEN + 1] = { '\0' };
 static char gQueueBuf [MAX_MSG_LEN + 1] = { '\0' };
 static bool gQueueFull = false;
+static bool gShowingPlaceholder = false;   // gMsgBuf holds NO_MESSAGE_PLACEHOLDER, not real content
 static char gClockBuf [MAX_MSG_LEN + 1] = { '\0' };
 static char gAlarmBuf [MAX_MSG_LEN + 1] = { '\0' };
 static char gLastClockStr[8] = { '\0' };
@@ -142,12 +143,26 @@ void display_start_boot_marquee() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Provisioning overlay — driven entirely by transport.cpp while WiFiManager
 // is either blocking (brief) or spinning in its non-blocking portal loop.
-// ─────────────────────────────────────────────────────────────────────────────
+//
+// display.cpp keeps its own copy of the text (gProvisionBuf) rather than
+// holding onto the caller's pointer: callers pass local/stack buffers (see
+// transport.cpp's apMsg/ipMsg), and MD_Parola::displayText() only stores the
+// pointer it's given, not a copy, so display_tick() re-issuing that same
+// pointer on every animation-complete tick needs it to still be valid for as
+// long as the overlay is showing. Today's call sites happen to keep their
+// buffer in scope for the whole time display_tick() is looping (transport.cpp
+// doesn't return until the overlay is done), but that is a fragile invariant
+// to depend on, not a guarantee — and MD_Parola has no accessor to read the
+// text back out, so the tick loop cannot ask the library for it either.
+static char gProvisionBuf[128];
+
 void display_show_provisioning(const char* msg) {
   gState        = STATE_PROVISION;
   gProvisioning = true;
+  strncpy(gProvisionBuf, msg, sizeof(gProvisionBuf) - 1);
+  gProvisionBuf[sizeof(gProvisionBuf) - 1] = '\0';
   P.displayClear();
-  P.displayText(msg, PA_LEFT, gSpeed, 0, PA_SCROLL_LEFT, PA_SCROLL_LEFT);
+  P.displayText(gProvisionBuf, PA_LEFT, gSpeed, 0, PA_SCROLL_LEFT, PA_SCROLL_LEFT);
 }
 
 void display_end_provisioning() { gProvisioning = false; }
@@ -169,13 +184,28 @@ void display_set_message(const char* msg, bool* accepted) {
     return;
   }
 
-  bool busy = (gMode == MODE_MESSAGE) && (gMsgBuf[0] != '\0');
+  if (gState == STATE_ALARM) {
+    // A write into gMsgBuf here would be invisible (active_scroll_text()
+    // returns gAlarmBuf while alarming) and would then be clobbered when
+    // display_dismiss_alarm() restores gMsgBuf from gSavedMsg. Queue it
+    // instead so it surfaces once the alarm clears.
+    if (!gQueueFull) {
+      strncpy(gQueueBuf, msg, MAX_MSG_LEN);
+      gQueueBuf[MAX_MSG_LEN] = '\0';
+      gQueueFull = true;
+      *accepted  = true;          // queued for after the alarm — tell the client now
+    }
+    return;
+  }
+
+  bool busy = (gMode == MODE_MESSAGE) && (gMsgBuf[0] != '\0') && !gShowingPlaceholder;
   gMode = MODE_MESSAGE;
 
   if (!busy) {
     strncpy(gMsgBuf, msg, MAX_MSG_LEN);
     gMsgBuf[MAX_MSG_LEN] = '\0';
     gQueueFull = false;
+    gShowingPlaceholder = false;
     restart_scroll();
     *accepted = true;
   } else if (!gQueueFull) {
@@ -189,6 +219,7 @@ void display_clear() {
   gMsgBuf[0]   = '\0';
   gQueueBuf[0] = '\0';
   gQueueFull   = false;
+  gShowingPlaceholder = false;
 
   if (gState == STATE_BOOT || gState == STATE_PROVISION) {
     gDeferClear = true;
@@ -220,8 +251,18 @@ void display_set_mode(DisplayMode m) {
   if (m == MODE_MESSAGE) {
     // Fix B7: pull a queued message forward if the slot is free.
     if (gMsgBuf[0] == '\0' && gQueueFull) promote_queue();
-    if (gMsgBuf[0] != '\0') restart_scroll();
-    else                    blank_hardware();
+    if (gMsgBuf[0] != '\0') {
+      restart_scroll();
+    } else {
+      // Nothing set yet: a dark panel reads as "device is off/broken", not
+      // "waiting for input". Show a placeholder instead. gShowingPlaceholder
+      // tracks that this is not real content — see display_set_message(),
+      // which must not treat a placeholder as an occupied slot.
+      strncpy(gMsgBuf, NO_MESSAGE_PLACEHOLDER, MAX_MSG_LEN);
+      gMsgBuf[MAX_MSG_LEN] = '\0';
+      gShowingPlaceholder = true;
+      restart_scroll();
+    }
   } else if (m == MODE_CLOCK) {
     gLastClockStr[0] = '\0';       // force repaint
     clock_refresh();
@@ -289,12 +330,15 @@ bool        display_is_booting() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Alarm overlay
 // ─────────────────────────────────────────────────────────────────────────────
+static bool gSavedWasPlaceholder = false;
+
 bool display_push_alarm(const char* msg, uint16_t durationSec) {
   if (!msg || !msg[0]) return false;
   if (gState == STATE_ALARM) return false;      // already showing one
 
   gSavedMode = gMode;
   gSavedFmt  = gFmt;
+  gSavedWasPlaceholder = gShowingPlaceholder;
   strncpy(gSavedMsg, gMsgBuf, MAX_MSG_LEN); gSavedMsg[MAX_MSG_LEN] = '\0';
 
   strncpy(gAlarmBuf, msg, MAX_MSG_LEN);     gAlarmBuf[MAX_MSG_LEN] = '\0';
@@ -308,9 +352,17 @@ bool display_push_alarm(const char* msg, uint16_t durationSec) {
 void display_dismiss_alarm() {
   if (gState != STATE_ALARM) return;
   gState = STATE_RUNNING;
-  gMode  = gSavedMode;
   gFmt   = gSavedFmt;
   strncpy(gMsgBuf, gSavedMsg, MAX_MSG_LEN); gMsgBuf[MAX_MSG_LEN] = '\0';
+  gShowingPlaceholder = gSavedWasPlaceholder;
+  // A message queued while the alarm was active must surface now, even if
+  // the mode active before the alarm was not MODE_MESSAGE (mirrors the
+  // boot-sequence promotion in display_tick()).
+  if (gQueueFull && gMsgBuf[0] == '\0') {
+    gMode = MODE_MESSAGE;
+  } else {
+    gMode = gSavedMode;
+  }
   display_set_mode(gMode);
 }
 
@@ -323,9 +375,10 @@ void display_tick() {
 
   if (gState == STATE_PROVISION) {
     if (P.displayAnimate()) {
-      // Caller supplies a persistent string via display_show_provisioning();
-      // we simply loop whatever is in the Parola buffer.
-      P.displayText(P.getText(), PA_LEFT, gSpeed, 0,
+      // Loop the persistent copy of whatever display_show_provisioning() was
+      // last called with (see gProvisionBuf above) — MD_Parola has no way to
+      // read the current text back out, so display.cpp must keep its own copy.
+      P.displayText(gProvisionBuf, PA_LEFT, gSpeed, 0,
                     PA_SCROLL_LEFT, PA_SCROLL_LEFT);
     }
     return;
@@ -351,6 +404,8 @@ void display_tick() {
           restart_scroll();
         } else if (gMode == MODE_CLOCK) {
           clock_refresh();
+        } else if (gMode == MODE_MESSAGE) {
+          display_set_mode(MODE_MESSAGE);   // shows the placeholder if nothing is set
         }
       }
     }
@@ -443,13 +498,14 @@ void promote_queue() {
   gMsgBuf[MAX_MSG_LEN] = '\0';
   gQueueBuf[0] = '\0';
   gQueueFull   = false;
+  gShowingPlaceholder = false;
 }
 
 void on_pass_complete() {
   if (gState == STATE_ALARM) {
     // Alarms loop until dismissed or their timer expires.
   } else if (gMode == MODE_MESSAGE) {
-    if (gPassCb) gPassCb();            // protocol layer broadcasts D:
+    if (gPassCb && !gShowingPlaceholder) gPassCb();  // protocol layer broadcasts D:
     if (gQueueFull) promote_queue();
   } else if (gMode == MODE_CLOCK_DATE) {
     strncpy(gClockBuf, clock_named_datetime().c_str(), MAX_MSG_LEN);
