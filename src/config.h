@@ -24,6 +24,15 @@
 #define PROVISIONING_AP_PREFIX     "BT-Billboard-Setup"
 #define WS_PORT             81
 
+// CHANGE THIS before deploying anywhere you don't fully trust the local
+// network: without it, ArduinoOTA accepted a firmware push from anyone on
+// the network with no authentication at all. This is a shared placeholder,
+// not a per-device secret -- it lives in source control, so it stops casual/
+// accidental pushes and requires deliberate credential entry from
+// PlatformIO/the IDE, but it is not a strong secret. Don't rely on it as
+// the only thing standing between this device and an untrusted network.
+#define OTA_PASSWORD        "billboard-ota"
+
 // ── Display / protocol limits ───────────────────────────────────────────────
 #define MAX_MSG_LEN         256
 #define NO_MESSAGE_PLACEHOLDER "No message set"

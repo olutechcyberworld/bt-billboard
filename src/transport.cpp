@@ -172,6 +172,7 @@ void transport_begin() {
   Serial.printf("[WS]   Listening on port %u\n", (unsigned)WS_PORT);
 
   ArduinoOTA.setHostname(gHostname);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
   ArduinoOTA.begin();
   Serial.println(F("[OTA]  Ready"));
 }
